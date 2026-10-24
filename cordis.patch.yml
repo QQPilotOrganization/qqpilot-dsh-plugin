@@ -7,4 +7,6 @@
     - id: qqpilot-dsh-plugin
       name: qqpilot-dsh-plugin
       config:
+        # agent (tools) | compat (return model text directly) | silent (record only)
+        mode: agent
         compatibilityMode: false

@@ -1,1 +1,1 @@
-{"meta":{"title":"QQPilot Bridge","description":"OpenAI-compatible endpoint that bridges QQPilot QQ messages to DSH, with reply/silence/image agent tools and a compatibility mode."}}
+{"meta":{"title":"QQPilot Bridge","description":"OpenAI-compatible endpoint that bridges QQPilot QQ messages to DSH with agent (tool), compatibility and silent run modes, plus a live chat-status feed in Settings."}}

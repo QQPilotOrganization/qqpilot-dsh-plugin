@@ -19,9 +19,10 @@ process.env.DSH_HOME = STATE_DIR
 
 const { apply } = await import('../lib/index.js')
 
-function makeReq(method, body) {
+function makeReq(method, body, url) {
   const req = new EventEmitter()
   req.method = method
+  req.url = url
   req.destroy = () => {}
   process.nextTick(() => {
     if (body !== undefined) req.emit('data', Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)))
@@ -84,7 +85,14 @@ function makeLlm(script) {
   }
 }
 
-async function loadPlugin(script) {
+async function loadPlugin(script, initialState) {
+  // Each scenario starts from clean persisted state.
+  rmSync(STATE_DIR, { recursive: true, force: true })
+  mkdirSync(STATE_DIR, { recursive: true })
+  if (initialState) {
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(path.join(STATE_DIR, 'qqpilot-dsh-plugin.json'), JSON.stringify(initialState), 'utf8')
+  }
   const llm = makeLlm(script)
   const routes = new Map()
   const ctx = {
@@ -120,10 +128,10 @@ async function post(routes, path, body) {
   return { status: res.statusCode, body: res.json() }
 }
 
-async function get(routes, path) {
+async function get(routes, path, query) {
   const handler = routes.get(path)
   assert.ok(handler, `route ${path} registered`)
-  const req = makeReq('GET')
+  const req = makeReq('GET', undefined, query ? `${path}?${query}` : path)
   const res = makeRes()
   await handler(req, res)
   return { status: res.statusCode, body: res.json() }
@@ -154,12 +162,23 @@ async function scenario(name, fn) {
 
 await scenario('routes registered and models route works', async () => {
   const { routes } = await loadPlugin([textChunks('ok')])
-  for (const path of ['/qqpilot/v1/chat/completions', '/qqpilot/v1/models', '/qqpilot/api/config', '/qqpilot/api/test', '/qqpilot/api/status']) {
+  for (const path of [
+    '/qqpilot/v1/chat/completions',
+    '/qqpilot/v1/models',
+    '/qqpilot/api/config',
+    '/qqpilot/api/test',
+    '/qqpilot/api/status',
+    '/qqpilot/api/activity',
+  ]) {
     assert.ok(routes.has(path), `missing ${path}`)
   }
   const models = await get(routes, '/qqpilot/v1/models')
   assert.equal(models.status, 200)
   assert.equal(models.body.data[0].id, 'deepseek-flash')
+  const cfg = await get(routes, '/qqpilot/api/config')
+  assert.equal(cfg.body.config.mode, 'agent')
+  assert.equal(typeof cfg.body.startedAt, 'number')
+  assert.equal(typeof cfg.body.uptimeMs, 'number')
 })
 
 await scenario('tool mode: reply tool call becomes OpenAI completion text', async () => {
@@ -213,14 +232,79 @@ await scenario('tool mode: reply with data URL image returns images array', asyn
   assert.ok(message.images[0].image_url.url.startsWith('data:image/png;base64,'))
 })
 
+await scenario('tool mode: empty [[NEXT]] segments are collapsed', async () => {
+  const { routes } = await loadPlugin([
+    toolCallChunks('call_next', 'qqpilot_reply', { text: '第一句[[NEXT]][[NEXT]]  第二句[[NEXT]]' }),
+  ])
+  const result = await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('分两条'))
+  assert.equal(result.body.choices[0].message.content, '第一句[[NEXT]]第二句')
+})
+
+await scenario('tool mode: reply containing only [[NEXT]] becomes silence', async () => {
+  const { routes } = await loadPlugin([toolCallChunks('call_empty', 'qqpilot_reply', { text: '[[NEXT]]' })])
+  const result = await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('在吗'))
+  assert.equal(result.body.choices[0].message.content, '')
+})
+
 await scenario('compatibility mode: no tools, direct text returned', async () => {
   const { routes, llm } = await loadPlugin([textChunks('兼容模式输出')])
   const set = await post(routes, '/qqpilot/api/config', { compatibilityMode: true })
   assert.equal(set.body.config.compatibilityMode, true)
+  assert.equal(set.body.config.mode, 'compat')
   const result = await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('你好'))
   assert.equal(result.body.choices[0].message.content, '兼容模式输出')
   assert.equal(llm.state.calls[0].tools, undefined, 'no tools in compatibility mode')
   const cfg = await get(routes, '/qqpilot/api/config')
+  assert.equal(cfg.body.config.compatibilityMode, true)
+})
+
+await scenario('run mode: silent records incoming message without calling the model', async () => {
+  const { routes, llm } = await loadPlugin([textChunks('不会被调用')])
+  const set = await post(routes, '/qqpilot/api/config', { mode: 'silent' })
+  assert.equal(set.body.config.mode, 'silent')
+  assert.equal(set.body.config.compatibilityMode, false)
+  const result = await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('在吗？'))
+  assert.equal(result.status, 200)
+  assert.equal(result.body.choices[0].message.content, '')
+  assert.equal(llm.state.calls.length, 0, 'silent mode never calls the model')
+  const feed = await get(routes, '/qqpilot/api/activity', 'since=0')
+  assert.equal(feed.status, 200)
+  assert.equal(feed.body.latestId, 1)
+  assert.equal(feed.body.activity.length, 1)
+  const entry = feed.body.activity[0]
+  assert.equal(entry.mode, 'silent')
+  assert.equal(entry.kind, 'silence')
+  assert.equal(entry.sender, 'Alice')
+  assert.ok(entry.text.includes('在吗'))
+  // Switching back to agent mode works and is reflected in the config.
+  const back = await post(routes, '/qqpilot/api/config', { mode: 'agent' })
+  assert.equal(back.body.config.mode, 'agent')
+  assert.equal(back.body.config.compatibilityMode, false)
+})
+
+await scenario('activity feed exposes parsed reply entries for the visual chat status', async () => {
+  const { routes } = await loadPlugin([toolCallChunks('call_feed', 'qqpilot_reply', { text: '收到喵' })])
+  await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('在吗'))
+  const feed = await get(routes, '/qqpilot/api/activity', 'since=0&limit=10')
+  assert.equal(feed.status, 200)
+  assert.equal(feed.body.activity.length, 1)
+  const entry = feed.body.activity[0]
+  assert.equal(entry.mode, 'agent')
+  assert.equal(entry.kind, 'reply')
+  assert.equal(entry.sender, 'Alice')
+  assert.equal(entry.reply, '收到喵')
+  assert.equal(entry.images, 0)
+  assert.equal(entry.usage.total_tokens, 18)
+  assert.ok(entry.elapsedMs >= 0)
+  // since=latestId yields no new entries.
+  const empty = await get(routes, '/qqpilot/api/activity', `since=${feed.body.latestId}`)
+  assert.equal(empty.body.activity.length, 0)
+})
+
+await scenario('legacy state file with compatibilityMode upgrades to compat mode', async () => {
+  const { routes } = await loadPlugin([textChunks('旧状态')], { compatibilityMode: true, extraInstructions: '' })
+  const cfg = await get(routes, '/qqpilot/api/config')
+  assert.equal(cfg.body.config.mode, 'compat')
   assert.equal(cfg.body.config.compatibilityMode, true)
 })
 

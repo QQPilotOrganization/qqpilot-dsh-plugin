@@ -2,7 +2,8 @@
 
 > 把 [QQPilot](https://github.com/QQPilotOrganization/QQPilot) 的 QQ 消息接入 DeepSeek Harness（DSH）的桥接插件：
 > 对 QQPilot 暴露一个 **OpenAI Chat Completion 兼容端点**，由 DSH 里配置的模型通过**智能体工具**决定
-> 「回复什么 / 不回复 / 附带图片」，并提供一个**兼容性模式**（不让模型调工具，直接把模型输出返回）。
+> 「回复什么 / 不回复 / 附带图片」；提供 **工具 / 兼容 / 静默** 三种运行模式，并在设置页内置
+> **可视化聊天动态**（实时看到收到的 QQ 消息、AI 的决定、回复内容、耗时与 token）。
 
 QQPilot 原本只会把聊天记录 POST 给一个 OpenAI 兼容的 `/chat/completions` 并取回文本。
 本插件接管这个端点后，把请求转成一次 DSH 模型调用，再把模型的决定收敛回 OpenAI 响应：
@@ -11,9 +12,9 @@ QQPilot 原本只会把聊天记录 POST 给一个 OpenAI 兼容的 `/chat/compl
 QQPilot ──POST /qqpilot/v1/chat/completions──▶ 本插件（DSH Host）
                                                    │
                                     ┌──────────────┴───────────────┐
-                                    │ 工具模式（默认）              │ 兼容性模式
-                                    │ 给模型 2 个工具：             │ 不给工具
-                                    │  qqpilot_reply(text, images)  │ 直接返回模型文本
+                                    │ 工具模式（默认）              │ 兼容模式 / 静默模式
+                                    │ 给模型 2 个工具：             │ 兼容：不给工具，直接返回文本
+                                    │  qqpilot_reply(text, images)  │ 静默：不调用模型，只记录消息
                                     │  qqpilot_do_not_reply         │
                                     └──────────────┬───────────────┘
                                                    ▼
@@ -25,20 +26,25 @@ QQPilot ──POST /qqpilot/v1/chat/completions──▶ 本插件（DSH Host）
 ## 功能
 
 - **OpenAI 兼容端点**：`POST /qqpilot/v1/chat/completions`（非流式），另提供 `GET /qqpilot/v1/models`。
-- **智能体工具（工具模式，默认）**
+- **三种运行模式（设置页可切换）**
+  - **工具模式（默认，agent）**：模型通过 `qqpilot_reply` / `qqpilot_do_not_reply` 决定是否回复、回什么。
+  - **兼容模式（compat）**：不给工具，直接把模型输出作为回复返回，适合不支持 tool calling 的模型。
+  - **静默模式（silent）**：不调用模型、不消耗 token，只把收到的消息记录到聊天动态里（观察/挂机用）。
+- **智能体工具（工具模式）**
   - `qqpilot_reply`：模型决定回复时调用；参数 `text`（正文）与 `images`（图片路径 / http(s) URL / data URL）。
   - `qqpilot_do_not_reply`：模型决定保持沉默时调用，插件返回空 `content`，QQPilot 跳过发送。
   - 模型没有调用工具而是直接输出文本时，文本仍然会作为回复返回（不会因模型“忘记调工具”而丢消息）。
   - 多轮工具循环上限可配置；工具调用失败时可自动回退到兼容输出。
-- **兼容性模式（设置项）**：关闭工具，一次普通模型调用，直接把模型输出作为回复返回。适合不支持
-  tool calling 的模型/服务商，也适合想完全保留 QQPilot 原始提示词行为的场景。
+- **可视化聊天动态（设置项）**：设置页新增「聊天动态」页签，每 2 秒拉取最近消息与 AI 决策，
+  以聊天气泡形式展示发送者、入站内容、已回复/沉默/错误、回复正文、图片数、耗时与 token；支持暂停刷新。
 - **返回图片**：回复图片会被规范化成 `data:image/...;base64,...` 放进
   `choices[0].message.images[].image_url.url`（QQPilot 唯一稳妥的图片返回形式）；仅有图片没有文本时会自动
   补一个短 caption，避免 QQPilot 把整条回复当作空内容跳过。
 - **接收图片**：QQPilot 的 vision 请求（`content` 分段数组中的 `image_url`）会通过 DSH `attachments`
   服务转成模型可读的图片块；没有附件服务时退化为文字占位，不会让请求失败。
-- **设置页**：DSH 设置 →「QQPilot 接入」，可查看端点地址、切换兼容性模式、写附加指令、看请求统计并一键测试。
-- **运行时状态**：设置页的修改持久化在 `~/.dsh/qqpilot-dsh-plugin.json`（仅 `compatibilityMode` 与
+- **设置页**：DSH 设置 →「QQPilot 接入」，含「概览 / 聊天动态 / 设置」三个页签：端点地址、运行模式、
+  附加指令、请求统计、测试连接与实时聊天状态。
+- **运行时状态**：设置页的修改持久化在 `~/.dsh/qqpilot-dsh-plugin.json`（`mode`、`compatibilityMode`、
   `extraInstructions`），重启 DSH 后仍生效。
 
 ## 安装
@@ -92,29 +98,32 @@ remote_server_timeout = 300
 > 端口以 DSH Web 实际监听为准（设置页里会显示完整端点）。如果 DSH 换了端口，QQPilot 的 `server_url` 也要同步改。
 > QQPilot 的 Ollama / builtin 后端不会走本插件，请保持 `forceollamaapi = false`。
 
-## 两种模式
+## 三种运行模式
 
-| | 工具模式（默认） | 兼容性模式 |
-|---|---|---|
-| 模型收到的工具 | `qqpilot_reply` / `qqpilot_do_not_reply` | 无 |
-| 决定回复 | 模型调用 `qqpilot_reply` | 模型直接输出文本 |
-| 决定沉默 | 模型调用 `qqpilot_do_not_reply`（返回空 content） | 模型输出空文本（或自己按 system.txt 决定） |
-| 图片 | `qqpilot_reply.images` 支持本地路径 / URL / data URL | 不支持（只返回文本） |
-| 适合 | 支持 tool calling 的模型；希望“该不该插话”由模型自己判断 | 不支持工具的模型；或希望完全沿用 QQPilot system.txt 的直接输出 |
+| | 工具模式（默认，agent） | 兼容模式（compat） | 静默模式（silent） |
+|---|---|---|---|
+| 是否调用模型 | 是 | 是 | **否**（不消耗 token） |
+| 模型收到的工具 | `qqpilot_reply` / `qqpilot_do_not_reply` | 无 | 无 |
+| 决定回复 | 模型调用 `qqpilot_reply` | 模型直接输出文本 | 永不回复 |
+| 决定沉默 | 模型调用 `qqpilot_do_not_reply`（返回空 content） | 模型输出空文本 | 总是返回空 content |
+| 图片 | `qqpilot_reply.images` 支持本地路径 / URL / data URL | 不支持（只返回文本） | 不支持 |
+| 聊天动态 | 记录完整决策 | 记录完整决策 | 只记录收到的消息（观察用） |
+| 适合 | 支持 tool calling 的模型；希望“该不该插话”由模型自己判断 | 不支持工具的模型；或希望完全沿用 QQPilot system.txt 的直接输出 | 挂机观察 / 临时静音，不花钱 |
 
-在 **DSH 设置 → QQPilot 接入** 里切换兼容性模式，立即生效并持久化；也可以在
-`cordis.patch.yml` 的 `config.compatibilityMode` 里给默认值。
+在 **DSH 设置 → QQPilot 接入 → 概览（或设置）** 里切换运行模式，立即生效并持久化；
+也可以在该页「聊天动态」页签实时查看收到的消息与 AI 的回复/沉默/错误。
 
 ## 配置项
 
-`cordis.patch.yml` 中 `config:` 支持以下字段（设置页只暴露兼容性模式与附加指令）：
+`cordis.patch.yml` 中 `config:` 支持以下字段（设置页暴露运行模式与附加指令）：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `compatibilityMode` | `false` | 兼容性模式开关 |
+| `mode` | `agent` | 运行模式：`agent`（工具）/ `compat`（兼容）/ `silent`（静默） |
+| `compatibilityMode` | `false` | 旧版兼容字段；`true` 等价于 `mode: compat`（仍可用，会被 `mode` 覆盖） |
 | `provider` / `model` | 空 | 空 = 使用 DSH 当前默认模型；也可在这里固定模型 |
 | `reasoningEffort` | 空 | 推理强度，空 = 跟随服务商默认 |
-| `extraInstructions` | 空 | 追加到系统指令里的额外要求（两种模式都生效） |
+| `extraInstructions` | 空 | 追加到系统指令里的额外要求（三种模式都生效） |
 | `maxToolRounds` | `4` | 工具循环最大轮数 |
 | `historyLimit` | `40` | 最多转发的历史消息条数 |
 | `requestTimeoutMs` | `180000` | 单次请求的模型调用超时（毫秒） |
@@ -135,8 +144,9 @@ remote_server_timeout = 300
 |---|---|
 | `POST /qqpilot/v1/chat/completions` | QQPilot 使用的 OpenAI 兼容端点 |
 | `GET /qqpilot/v1/models` | 模型目录（返回 DSH 当前模型） |
-| `GET /qqpilot/api/config` | 设置页读取配置 / 端点 / 统计 |
-| `POST /qqpilot/api/config` | 设置页写入 `{compatibilityMode?, extraInstructions?}` |
+| `GET /qqpilot/api/config` | 设置页读取配置 / 端点 / 统计 / 运行时长 |
+| `POST /qqpilot/api/config` | 设置页写入 `{mode?, compatibilityMode?, extraInstructions?}` |
+| `GET /qqpilot/api/activity?since=&limit=` | 设置页「聊天动态」轮询：最近的消息 + AI 决策 |
 | `POST /qqpilot/api/test` | 设置页“测试连接”：走一遍完整回复流程 |
 | `GET /qqpilot/api/status` | 统计信息 |
 
@@ -196,9 +206,23 @@ node test/verify.mjs --url http://127.0.0.1:55068/qqpilot/v1
 | 接收图片 | 入站 `image_url` data URL 经 `attachments` 转成图片块，模型正确回答了图片内容 |
 | 静默 | 模型调用 `qqpilot_do_not_reply` 时返回空 `content`（统计 silences≥1） |
 | 设置页 | Web Client `settings.section` 已出现 `qqpilot`（order 62，label「QQPilot 接入」），active=true |
-| 离线单测 | `node test/host-unit.mjs` 全部 PASS（路由、系统消息合并、工具循环、图片、兼容模式、400 校验） |
+| 离线单测 | `node test/host-unit.mjs` 全部 PASS（路由、系统消息合并、工具循环、图片、三种模式、聊天动态、旧配置升级、`[[NEXT]]` 清洗、400 校验） |
 
 > 端口和模型取决于当前 DSH 会话，重启后以设置页显示的 endpoint 为准。
+
+### 第二轮（可视化聊天状态 + 运行模式 + 深色模式修复）
+
+| 检查 | 结果 |
+|---|---|
+| 运行模式切换 | `POST /qqpilot/api/config {mode}` 在 `silent` / `compat` / `agent` 间即时切换并持久化到 `~/.dsh/qqpilot-dsh-plugin.json` |
+| 静默模式 | 请求 1ms 返回空 `content`，usage=0，不调用模型；聊天动态记录 `mode=silent, kind=silence` |
+| 兼容模式 | 返回模型直出文本；聊天动态记录 `mode=compat, kind=reply` |
+| 工具模式 | 模型经工具决定回复；聊天动态记录 `mode=agent, kind=reply`、耗时与 tokens |
+| 聊天动态接口 | `GET /qqpilot/api/activity?since=0&limit=10` 返回 3 条（静默/兼容/工具），含 sender（从 `[username]` 解析）、入站文本、回复、图片数、elapsedMs、usage；增量 `since=latestId` 正常 |
+| 设置页 | 设置页出现「概览 / 聊天动态 / 设置」页签与运行模式选择器；Web Client Slot 仍为 active（HMR 重载后） |
+| 深色模式按钮 | 主按钮文字与开启态开关圆点改用 `--dsw-alias-label-primary-foreground`（浅色=白、深色=近黑），不再出现白字白底 |
+
+> 可视化聊天状态为浏览器渲染；Slot 注册与接口数据已验证，实际视觉效果请在 DSH 设置页确认（必要时刷新页面加载最新客户端代码）。
 
 ## License
 
