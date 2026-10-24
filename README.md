@@ -56,7 +56,10 @@ QQPilot ──POST /qqpilot/v1/chat/completions──▶ 本插件（DSH Host）
 
 本仓库就是一个 DSH bundle 包（`package.json` 里 `dsh.bundle.patch` 指向 `cordis.patch.yml`），无需构建步骤。
 
-方式一：在 DSH 当前 profile 里安装本目录（推荐，开发时本地链接）：
+方式一：
+![alt text](image.png)
+
+方式二：在 DSH 当前 profile 里安装本目录（推荐，开发时本地链接）：
 
 ```text
 plugin_manager → install_bundle → target = <本目录绝对路径>
