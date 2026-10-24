@@ -74,6 +74,16 @@ function makeLlm(script) {
   const state = { calls: [], index: 0 }
   return {
     state,
+    listProviders() {
+      return [
+        { id: 'deepseek-official', name: 'DeepSeek' },
+        { id: 'llamacpp', name: 'llama.cpp' },
+      ]
+    },
+    listModels(provider) {
+      if (provider === 'llamacpp') return Promise.resolve([{ provider, id: 'MiniCPM5-1B-F16.gguf', name: 'MiniCPM5' }])
+      return Promise.resolve([{ provider, id: 'deepseek-flash', name: 'DeepSeek Flash' }])
+    },
     stream(options) {
       state.calls.push(options)
       const step = script[Math.min(state.index, script.length - 1)]
@@ -210,6 +220,7 @@ await scenario('routes registered and models route works', async () => {
     '/qqpilot/api/test',
     '/qqpilot/api/status',
     '/qqpilot/api/activity',
+    '/qqpilot/api/models',
   ]) {
     assert.ok(routes.has(path), `missing ${path}`)
   }
@@ -339,6 +350,28 @@ await scenario('tool mode: reply containing only [[NEXT]] becomes silence', asyn
   const { routes } = await loadPlugin([toolCallChunks('call_empty', 'qqpilot_reply', { text: '[[NEXT]]' })])
   const result = await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('在吗'))
   assert.equal(result.body.choices[0].message.content, '')
+})
+
+await scenario('model catalog and provider/model override', async () => {
+  const { routes, llm } = await loadPlugin([textChunks('指定模型回复')])
+  const catalog = await get(routes, '/qqpilot/api/models')
+  assert.equal(catalog.status, 200)
+  assert.deepEqual(
+    catalog.body.providers.map((provider) => provider.id).sort(),
+    ['deepseek-official', 'llamacpp'],
+  )
+  assert.equal(catalog.body.defaultSelection.provider, 'deepseek-official')
+  const set = await post(routes, '/qqpilot/api/config', { provider: 'llamacpp', model: 'MiniCPM5-1B-F16.gguf' })
+  assert.equal(set.body.config.providerOverride, 'llamacpp')
+  assert.equal(set.body.config.modelOverride, 'MiniCPM5-1B-F16.gguf')
+  assert.equal(set.body.config.modelSource, 'override')
+  const result = await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('你好'))
+  assert.equal(result.body.choices[0].message.content, '指定模型回复')
+  assert.equal(llm.state.calls[0].provider, 'llamacpp')
+  assert.equal(llm.state.calls[0].model, 'MiniCPM5-1B-F16.gguf')
+  const reset = await post(routes, '/qqpilot/api/config', { provider: '', model: '' })
+  assert.equal(reset.body.config.modelSource, 'default')
+  assert.equal(reset.body.config.provider, 'deepseek-official')
 })
 
 await scenario('compatibility mode: no tools, direct text returned', async () => {

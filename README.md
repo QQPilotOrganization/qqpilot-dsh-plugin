@@ -39,6 +39,7 @@ QQPilot ──POST /qqpilot/v1/chat/completions──▶ 本插件（DSH Host）
   - **DSH 聊天窗口内**：聊天输入框上方常驻一条可折叠的「QQPilot」状态条，显示当前模式、最新一条 QQ 消息与 AI 决策；展开后可看最近 6 条收/发记录（含 DSH 工具调用），每 2 秒自动刷新。
   - **设置页 → 聊天动态**：完整记录视图，支持暂停刷新、查看耗时/token/工具调用与错误。
 - **可调用 DSH 工具**：工具模式下可把 DSH 的工具（默认只读 + 联网：`read` / `glob` / `grep` / `read_image` / `web_search` / `web_fetch`）一并提供给桥接后的 AI；AI 可先查资料/读文件，再用 `qqpilot_reply` 回复。可在设置页选择「关闭 / 安全 / 全部」策略，危险工具（`pwsh` / `bash` / `write` / `edit` / `subagent` / `workflow` / `plugin_manager`）默认拒绝。
+- **模型选择**：默认跟随 DSH 全局默认模型；设置页「模型」卡片可改为仅 QQPilot 指定的 provider/model（下拉框，保存后下一轮生效），也可在 `cordis.patch.yml` 固定。
 - **返回图片**：回复图片会被规范化成 `data:image/...;base64,...` 放进
   `choices[0].message.images[].image_url.url`（QQPilot 唯一稳妥的图片返回形式）；仅有图片没有文本时会自动
   补一个短 caption，避免 QQPilot 把整条回复当作空内容跳过。
@@ -115,6 +116,18 @@ remote_server_timeout = 300
 在 **DSH 设置 → QQPilot 接入 → 概览（或设置）** 里切换运行模式，立即生效并持久化；
 也可以在该页「聊天动态」页签实时查看收到的消息与 AI 的回复/沉默/错误。
 
+## 选择模型（三层，按优先级从高到低）
+
+1. **插件设置页 →「模型」卡片（推荐）**：默认「跟随 DSH 默认模型」；关掉开关后可从下拉框选择
+   provider 与 model（例如 `deepseek-official/deepseek-flash`、`llamacpp/MiniCPM5-1B-F16.gguf`、
+   `xiaomi/mimo-v2.6-flash`），点「保存模型」后下一轮请求生效，持久化到 `~/.dsh/qqpilot-dsh-plugin.json`。
+2. **DSH 全局默认模型**：未指定时插件实时读取 DSH 当前的默认模型，随 DSH 底部模型选择器 / Settings → Models 变化。
+3. **`cordis.patch.yml` 的 `provider` / `model`**：给默认值用；设置页的显式指定会覆盖它。
+
+> 模型列表通过 DSH `llm` 服务的 `listProviders()` / `listModels()` 实时读取；某个 provider 读取失败会在设置页提示。
+> 不同模型能力差异较大：工具调用建议使用支持 tool calling 的模型（如 DeepSeek 系列）；本地小模型（1B 级）在
+> 多工具场景下可能很慢甚至超时，可把 DSH 工具策略设为「关闭」或改用更大模型。
+
 ## 配置项
 
 `cordis.patch.yml` 中 `config:` 支持以下字段（设置页暴露运行模式与附加指令）：
@@ -123,7 +136,7 @@ remote_server_timeout = 300
 |---|---|---|
 | `mode` | `agent` | 运行模式：`agent`（工具）/ `compat`（兼容）/ `silent`（静默） |
 | `compatibilityMode` | `false` | 旧版兼容字段；`true` 等价于 `mode: compat`（仍可用，会被 `mode` 覆盖） |
-| `provider` / `model` | 空 | 空 = 使用 DSH 当前默认模型；也可在这里固定模型 |
+| `provider` / `model` | 空 | 空 = 跟随 DSH 默认模型；也可在这里给默认值（设置页「模型」卡片可覆盖） |
 | `reasoningEffort` | 空 | 推理强度，空 = 跟随服务商默认 |
 | `extraInstructions` | 空 | 追加到系统指令里的额外要求（三种模式都生效） |
 | `maxToolRounds` | `4` | 工具循环最大轮数 |
@@ -156,6 +169,7 @@ remote_server_timeout = 300
 | `GET /qqpilot/api/status` | 统计信息 |
 | `GET /qqpilot/api/tools` | DSH 工具桥诊断：策略、可见工具、专用 bridge agent、全局/作用域工具 |
 | `POST /qqpilot/api/tools/test` | 通过真实工具管线执行一次 `read`（读插件自身 package.json），验证 DSH 工具调用链路 |
+| `GET /qqpilot/api/models` | 模型目录：DSH provider/model 列表、当前默认选择、生效模型 |
 
 ## 与 QQPilot 的输出约定
 
@@ -244,6 +258,17 @@ node test/verify.mjs --url http://127.0.0.1:55068/qqpilot/v1
 | 离线单测 | 新增“安全工具可见并可执行”“关闭策略不提供工具”“未知工具不执行”场景，全部 PASS |
 
 > 工具调用发生在工具模式下；兼容模式与静默模式不会向模型提供任何工具。首次进入聊天窗口若看不到状态条，刷新一次页面即可加载新的客户端代码。
+
+### 第四轮（模型选择）
+
+| 检查 | 结果 |
+|---|---|
+| 模型目录接口 | `GET /qqpilot/api/models` 返回 7 个 provider（deepseek-official / deepseek-account / xiaomi / llamacpp / spark-x2 / qwen35 / deepseek-r1-0528-qwen3-8b）及各自模型 |
+| 设置页模型卡片 | 设置 → QQPilot 接入 → 设置 → 模型：跟随 DSH 默认模型开关 + provider/model 下拉 + 保存模型 |
+| 指定模型生效 | POST `{provider:"deepseek-official",model:"deepseek-flash"}` 后，`config.modelSource=override`，QQPilot 模拟请求 954ms 返回 `"等于2"` |
+| 恢复默认 | POST `{provider:"",model:""}` 后 `modelSource=default`，当前默认 `llamacpp/MiniCPM5-1B-F16.gguf` |
+| 持久化 | `provider` / `model` / `reasoningEffort` 写入 `~/.dsh/qqpilot-dsh-plugin.json` |
+| 离线单测 | 新增模型目录 + 指定/恢复模型场景，全部 PASS |
 
 ## License
 
