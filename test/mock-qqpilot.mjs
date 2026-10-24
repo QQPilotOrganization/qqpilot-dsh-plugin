@@ -122,7 +122,7 @@ export function qqUserMessage(username, text, time = formatQQTime()) {
  * @returns {{model:string, messages:Array<object>, stream:false}}
  */
 export function buildQQPilotBody({
-  latestText = '1+1 等于几？请简短回答。',
+  latestText = '你好，现在几点了',
   image = false,
   history = true,
   model = DEFAULT_MODEL,

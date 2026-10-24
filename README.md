@@ -1,3 +1,5 @@
+<img src="icon.svg" width=200>
+
 # qqpilot-dsh-plugin
 
 > 把 [QQPilot](https://github.com/QQPilotOrganization/QQPilot) 的 QQ 消息接入 DeepSeek Harness（DSH）的桥接插件：

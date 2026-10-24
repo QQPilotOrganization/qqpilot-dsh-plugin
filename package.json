@@ -2,7 +2,7 @@
   "name": "qqpilot-dsh-plugin",
   "version": "0.1.0",
   "private": true,
-  "description": "QQPilot bridge for DeepSeek Harness: an OpenAI Chat-Completion endpoint that lets the configured DSH model decide whether/how to reply to QQ messages, with agent tools (reply / stay silent / send images) and a compatibility mode that returns model text directly.",
+  "description": "QQPilot 连接 DeepSeek Harness: OpenAI Chat-Completion 兼容端口 让 DSH 选择是否与如何回复消息, 具有工具调用功能 (reply / stay silent / send images) 附带兼容模式，适用入门级设备运行的本地模型（1B~9B)",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -10,13 +10,13 @@
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon2.svg"
   },
   "files": [
     "lib",
     "cordis.patch.yml",
     "locale",
-    "icon.svg",
+    "icon2.svg",
     "README.md"
   ],
   "dsh": {
