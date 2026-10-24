@@ -94,10 +94,51 @@ async function loadPlugin(script, initialState) {
     writeFileSync(path.join(STATE_DIR, 'qqpilot-dsh-plugin.json'), JSON.stringify(initialState), 'utf8')
   }
   const llm = makeLlm(script)
+  const toolExecutions = []
+  const agentCreations = []
+  const fakeAgents = {
+    get() {
+      return undefined
+    },
+    async create(options) {
+      agentCreations.push(options)
+      return { agent: { id: options.sessionId } }
+    },
+    async resume() {
+      return { agent: { id: 'qqpilot-bridge' } }
+    },
+  }
+  const fakeTools = {
+    schemas(scope) {
+      return [
+        {
+          name: 'web_search',
+          description: 'Search the web',
+          parameters: { type: 'object', properties: { queries: { type: 'array', items: { type: 'string' } } }, additionalProperties: false },
+        },
+        {
+          name: 'read',
+          description: 'Read a file',
+          parameters: { type: 'object', properties: { file_path: { type: 'string' } }, additionalProperties: false },
+        },
+        {
+          name: 'pwsh',
+          description: 'Run shell (denied by default)',
+          parameters: { type: 'object', properties: { command: { type: 'string' } }, additionalProperties: false },
+        },
+      ]
+    },
+    execute(input) {
+      toolExecutions.push(input)
+      return { isError: false, value: { ok: true }, content: [{ type: 'text', text: `搜索结果(${input.name}): 今日新闻标题` }] }
+    },
+  }
   const routes = new Map()
   const ctx = {
     get(name) {
       if (name === 'llm') return llm
+      if (name === 'tools') return fakeTools
+      if (name === 'agents') return fakeAgents
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-flash' }) }
       return undefined
     },
@@ -116,7 +157,7 @@ async function loadPlugin(script, initialState) {
     },
   }
   apply(ctx, {})
-  return { llm, routes }
+  return { llm, routes, toolExecutions, agentCreations }
 }
 
 async function post(routes, path, body) {
@@ -192,10 +233,9 @@ await scenario('tool mode: reply tool call becomes OpenAI completion text', asyn
   assert.equal(result.body.usage.total_tokens, 18)
   assert.equal(llm.state.calls.length, 1, 'one model call for a single tool decision')
   assert.ok(Array.isArray(llm.state.calls[0].tools), 'tools passed to the model')
-  assert.deepEqual(
-    llm.state.calls[0].tools.map((t) => t.name),
-    ['qqpilot_reply', 'qqpilot_do_not_reply'],
-  )
+  const pushedTools = llm.state.calls[0].tools.map((t) => t.name)
+  assert.ok(pushedTools.includes('qqpilot_reply'))
+  assert.ok(pushedTools.includes('qqpilot_do_not_reply'))
   // Instruction and QQPilot persona share ONE system message.
   const systems = llm.state.calls[0].messages.filter((m) => m.role === 'system')
   assert.equal(systems.length, 1, 'a single system message')
@@ -230,6 +270,61 @@ await scenario('tool mode: reply with data URL image returns images array', asyn
   assert.equal(message.content, '给你图')
   assert.equal(message.images.length, 1)
   assert.ok(message.images[0].image_url.url.startsWith('data:image/png;base64,'))
+})
+
+await scenario('agent mode exposes safe DSH tools and executes them', async () => {
+  const { routes, llm, toolExecutions, agentCreations } = await loadPlugin([
+    toolCallChunks('call_ws', 'web_search', { queries: ['今日新闻'] }),
+    toolCallChunks('call_r', 'qqpilot_reply', { text: '根据搜索：今日新闻标题' }),
+  ])
+  const cfg = await get(routes, '/qqpilot/api/config')
+  assert.deepEqual([...cfg.body.availableDshTools].sort(), ['read', 'web_search'])
+  assert.equal(cfg.body.config.dshTools, 'safe')
+  assert.equal(agentCreations.length, 1, 'a dedicated bridge agent supplies the tool scope')
+  assert.equal(agentCreations[0].sessionId, 'qqpilot-bridge')
+  const result = await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('搜一下今日新闻'))
+  assert.equal(result.status, 200)
+  assert.equal(result.body.choices[0].message.content, '根据搜索：今日新闻标题')
+  assert.equal(llm.state.calls.length, 2, 'one tool round plus the reply round')
+  const toolNames = llm.state.calls[0].tools.map((tool) => tool.name)
+  assert.ok(toolNames.includes('qqpilot_reply'))
+  assert.ok(toolNames.includes('qqpilot_do_not_reply'))
+  assert.ok(toolNames.includes('web_search'))
+  assert.ok(toolNames.includes('read'))
+  assert.ok(!toolNames.includes('pwsh'), 'dangerous tool denied by default')
+  assert.equal(toolExecutions.length, 1)
+  assert.equal(toolExecutions[0].name, 'web_search')
+  assert.deepEqual(toolExecutions[0].arguments, { queries: ['今日新闻'] })
+  assert.ok(toolExecutions[0].agent && toolExecutions[0].agent.id === 'qqpilot-bridge', 'tool runs in the bridge agent scope')
+  const secondMessages = llm.state.calls[1].messages
+  const toolMessage = secondMessages.find((message) => message.role === 'tool')
+  assert.ok(toolMessage, 'tool result was fed back to the model')
+  assert.ok(toolMessage.content[0].text.includes('搜索结果'))
+  const feed = await get(routes, '/qqpilot/api/activity', 'since=0')
+  assert.deepEqual(feed.body.activity[0].tools, ['web_search'])
+})
+
+await scenario('dshTools off withholds every DSH tool', async () => {
+  const { routes, llm } = await loadPlugin([textChunks('直接回答')])
+  const set = await post(routes, '/qqpilot/api/config', { dshTools: 'off' })
+  assert.equal(set.body.config.dshTools, 'off')
+  assert.deepEqual(set.body.availableDshTools, [])
+  const result = await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('你好'))
+  assert.equal(result.body.choices[0].message.content, '直接回答')
+  assert.deepEqual(
+    llm.state.calls[0].tools.map((tool) => tool.name),
+    ['qqpilot_reply', 'qqpilot_do_not_reply'],
+  )
+})
+
+await scenario('unknown tool calls are rejected without execution', async () => {
+  const { routes, toolExecutions } = await loadPlugin([
+    toolCallChunks('call_bad', 'not_a_real_tool', {}),
+    toolCallChunks('call_r2', 'qqpilot_reply', { text: '好的' }),
+  ])
+  const result = await post(routes, '/qqpilot/v1/chat/completions', qqpilotBody('试试'))
+  assert.equal(result.body.choices[0].message.content, '好的')
+  assert.equal(toolExecutions.length, 0)
 })
 
 await scenario('tool mode: empty [[NEXT]] segments are collapsed', async () => {

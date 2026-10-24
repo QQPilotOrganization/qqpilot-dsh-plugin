@@ -35,8 +35,10 @@ QQPilot ──POST /qqpilot/v1/chat/completions──▶ 本插件（DSH Host）
   - `qqpilot_do_not_reply`：模型决定保持沉默时调用，插件返回空 `content`，QQPilot 跳过发送。
   - 模型没有调用工具而是直接输出文本时，文本仍然会作为回复返回（不会因模型“忘记调工具”而丢消息）。
   - 多轮工具循环上限可配置；工具调用失败时可自动回退到兼容输出。
-- **可视化聊天动态（设置项）**：设置页新增「聊天动态」页签，每 2 秒拉取最近消息与 AI 决策，
-  以聊天气泡形式展示发送者、入站内容、已回复/沉默/错误、回复正文、图片数、耗时与 token；支持暂停刷新。
+- **可视化聊天状态（两种入口，均已内置）**
+  - **DSH 聊天窗口内**：聊天输入框上方常驻一条可折叠的「QQPilot」状态条，显示当前模式、最新一条 QQ 消息与 AI 决策；展开后可看最近 6 条收/发记录（含 DSH 工具调用），每 2 秒自动刷新。
+  - **设置页 → 聊天动态**：完整记录视图，支持暂停刷新、查看耗时/token/工具调用与错误。
+- **可调用 DSH 工具**：工具模式下可把 DSH 的工具（默认只读 + 联网：`read` / `glob` / `grep` / `read_image` / `web_search` / `web_fetch`）一并提供给桥接后的 AI；AI 可先查资料/读文件，再用 `qqpilot_reply` 回复。可在设置页选择「关闭 / 安全 / 全部」策略，危险工具（`pwsh` / `bash` / `write` / `edit` / `subagent` / `workflow` / `plugin_manager`）默认拒绝。
 - **返回图片**：回复图片会被规范化成 `data:image/...;base64,...` 放进
   `choices[0].message.images[].image_url.url`（QQPilot 唯一稳妥的图片返回形式）；仅有图片没有文本时会自动
   补一个短 caption，避免 QQPilot 把整条回复当作空内容跳过。
@@ -125,6 +127,9 @@ remote_server_timeout = 300
 | `reasoningEffort` | 空 | 推理强度，空 = 跟随服务商默认 |
 | `extraInstructions` | 空 | 追加到系统指令里的额外要求（三种模式都生效） |
 | `maxToolRounds` | `4` | 工具循环最大轮数 |
+| `dshTools` | `safe` | 是否向桥接后的 AI 提供 DSH 工具：`off` / `safe`（只读+联网）/ `all`（除危险工具外全部） |
+| `dshToolDeny` | `["pwsh","bash","write","edit","subagent","workflow","plugin_manager"]` | 始终拒绝的 DSH 工具名 |
+| `maxDshToolCalls` | `6` | 单次请求内最多执行多少次 DSH 工具 |
 | `historyLimit` | `40` | 最多转发的历史消息条数 |
 | `requestTimeoutMs` | `180000` | 单次请求的模型调用超时（毫秒） |
 | `fallbackToCompat` | `true` | 工具模式调用报错时是否回退为兼容输出 |
@@ -144,11 +149,13 @@ remote_server_timeout = 300
 |---|---|
 | `POST /qqpilot/v1/chat/completions` | QQPilot 使用的 OpenAI 兼容端点 |
 | `GET /qqpilot/v1/models` | 模型目录（返回 DSH 当前模型） |
-| `GET /qqpilot/api/config` | 设置页读取配置 / 端点 / 统计 / 运行时长 |
-| `POST /qqpilot/api/config` | 设置页写入 `{mode?, compatibilityMode?, extraInstructions?}` |
+| `GET /qqpilot/api/config` | 设置页读取配置 / 端点 / 统计 / 运行时长 / 可用 DSH 工具列表 |
+| `POST /qqpilot/api/config` | 设置页写入 `{mode?, compatibilityMode?, extraInstructions?, dshTools?}` |
 | `GET /qqpilot/api/activity?since=&limit=` | 设置页「聊天动态」轮询：最近的消息 + AI 决策 |
 | `POST /qqpilot/api/test` | 设置页“测试连接”：走一遍完整回复流程 |
 | `GET /qqpilot/api/status` | 统计信息 |
+| `GET /qqpilot/api/tools` | DSH 工具桥诊断：策略、可见工具、专用 bridge agent、全局/作用域工具 |
+| `POST /qqpilot/api/tools/test` | 通过真实工具管线执行一次 `read`（读插件自身 package.json），验证 DSH 工具调用链路 |
 
 ## 与 QQPilot 的输出约定
 
@@ -223,6 +230,20 @@ node test/verify.mjs --url http://127.0.0.1:55068/qqpilot/v1
 | 深色模式按钮 | 主按钮文字与开启态开关圆点改用 `--dsw-alias-label-primary-foreground`（浅色=白、深色=近黑），不再出现白字白底 |
 
 > 可视化聊天状态为浏览器渲染；Slot 注册与接口数据已验证，实际视觉效果请在 DSH 设置页确认（必要时刷新页面加载最新客户端代码）。
+
+### 第三轮（聊天窗口状态条 + DSH 工具调用）
+
+| 检查 | 结果 |
+|---|---|
+| 聊天窗口状态条 | Web Client `conversation.input.dock` 中已注册 `qqpilot-status`（order 70，active）；输入框上方显示 QQPilot 模式与最新消息，展开看最近 6 条，2 秒自动刷新 |
+| 设置页并存 | `settings.section` 的 `qqpilot` 仍 active（两个入口同时保留） |
+| DSH 工具可见 | `GET /qqpilot/api/config` 的 `availableDshTools` 返回 `read, glob, grep, web_search, web_fetch, read_image`（安全策略） |
+| DSH 工具作用域 | 插件自动创建专用 `qqpilot-bridge` Agent（挂载当前默认 preset），工具在该 Agent 作用域内执行，不污染用户会话；`GET /qqpilot/api/tools` 可看到 35 个可见工具与过滤结果 |
+| DSH 工具真实调用 | `POST /qqpilot/api/tools/test` → `ok:true`，`read` 读取插件 package.json，9ms 返回内容（真实 `ctx.tools.execute` 管线） |
+| 危险工具拒绝 | `pwsh / bash / write / edit / subagent / workflow / plugin_manager` 默认在 `dshToolDeny`，不会提供给模型 |
+| 离线单测 | 新增“安全工具可见并可执行”“关闭策略不提供工具”“未知工具不执行”场景，全部 PASS |
+
+> 工具调用发生在工具模式下；兼容模式与静默模式不会向模型提供任何工具。首次进入聊天窗口若看不到状态条，刷新一次页面即可加载新的客户端代码。
 
 ## License
 

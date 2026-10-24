@@ -10,3 +10,5 @@
         # agent (tools) | compat (return model text directly) | silent (record only)
         mode: agent
         compatibilityMode: false
+        # off | safe (read-only + web) | all (minus dshToolDeny)
+        dshTools: safe
