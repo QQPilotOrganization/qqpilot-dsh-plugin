@@ -1,35 +1,38 @@
 {
   "name": "qqpilot-dsh-plugin",
   "version": "0.1.0",
-  "description": "qqpilot-dsh-plugin — a DeepSeek Harness plugin (tool template).",
+  "private": true,
+  "description": "QQPilot bridge for DeepSeek Harness: an OpenAI Chat-Completion endpoint that lets the configured DSH model decide whether/how to reply to QQ messages, with agent tools (reply / stay silent / send images) and a compatibility mode that returns model text directly.",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "lib/index.js",
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
   },
   "files": [
-    "dist",
-    "cordis.patch.yml"
+    "lib",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
     }
   },
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
-  },
-  "dependencies": {
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.3"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.5"
-  },
-  "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.5",
-    "@types/node": "^22.10.0",
-    "typescript": "^5.6.0"
+  "engines": {
+    "node": ">=22.13.0"
   }
 }

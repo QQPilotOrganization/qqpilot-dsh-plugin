@@ -1,9 +1,10 @@
-# qqpilot-dsh-plugin bundle layer — applied when a profile lists this bundle
-# (package.json declares `dsh.bundle.patch` pointing at this file).
+# qqpilot-dsh-plugin bundle layer — applied when a profile lists this bundle.
+# `name` is this package's name (resolved through the profile node_modules).
 #
-# PITFALL: `name` is a PACKAGE NAME (resolved through the profile's node_modules
-# or the installation fallback `$DSH_HOME/profiles/node_modules`), NOT a
-# relative path. `qqpilot-dsh-plugin` is this package's main entry (→ dist/index.js).
+# Config values below are the defaults; the settings card (Settings → QQPilot)
+# writes runtime overrides to ~/.dsh/qqpilot-dsh-plugin.json.
 - insert:
     - id: qqpilot-dsh-plugin
       name: qqpilot-dsh-plugin
+      config:
+        compatibilityMode: false

@@ -1,0 +1,1 @@
+{"meta":{"title":"QQPilot 接入","description":"把 QQPilot 的 QQ 消息通过 OpenAI 兼容接口接入 DSH，由模型通过工具决定回复/沉默/发图，并提供兼容性模式。"}}
